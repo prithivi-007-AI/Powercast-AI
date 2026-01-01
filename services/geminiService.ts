@@ -1,42 +1,54 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { LoadDataPoint, GeneratorUnit, ForecastResult } from "../types";
+import { LoadDataPoint, GeneratorUnit, ForecastResult, HorizonUnit } from "../types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export const performAIForecast = async (
   historicalData: LoadDataPoint[],
-  horizon: number,
+  horizonValue: number,
+  horizonUnit: HorizonUnit,
   lookBack: number,
   units: GeneratorUnit[]
 ): Promise<ForecastResult> => {
-  // Take last lookBack data points
   const recentData = historicalData.slice(-lookBack);
   const dataSummary = recentData.map(d => `[${d.timestamp}, ${d.load}]`).join(", ");
+  const currentTotalCapacity = units.reduce((acc, u) => acc + u.capacity, 0);
   const unitsSummary = units.map(u => `${u.name}: ${u.capacity}MW`).join(", ");
+
+  const isLongTerm = horizonUnit === 'years' || (horizonUnit === 'days' && horizonValue > 30);
 
   const response = await ai.models.generateContent({
     model: "gemini-3-pro-preview",
     contents: `
-      You are an expert Power Systems Load Forecaster. 
-      Historical Load Data (Last ${lookBack} hours): ${dataSummary}
-      Generator Units: ${unitsSummary}
-      Forecast Horizon: Next ${horizon} hours.
+      You are a Senior Power Systems Consultant.
+      Historical Context: ${dataSummary}
+      Current Infrastructure: ${unitsSummary} (Total Capacity: ${currentTotalCapacity}MW)
+      Forecast Task: Predict next ${horizonValue} ${horizonUnit}.
 
-      Task:
-      1. Predict the electrical load for the next ${horizon} hours based on the trend in historical data.
-      2. IMPORTANT: To allow for accuracy verification, also include predictions for the PREVIOUS 6 HOURS of the historical data provided. This creates an "overlapping" period for comparison.
-      3. Calculate the total generation requirement (peak load + 10% reserve margin).
-      4. Recommend which generator units should be 'ON' and which 'OFF' (Unit Commitment) using a greedy approach.
-      5. Identify the best 4-hour window for maintenance where the load is lowest.
+      Requirements:
+      1. Generate a load forecast for the specified horizon. If unit is 'years', assume a reasonable annual load growth (e.g., 2-5%) based on the provided trend.
+      2. If the horizon is 'hours' or 'days', include a 6-hour overlap with the latest historical data for accuracy checking.
+      3. Calculate peak demand and total generation requirement (+15% reserve margin).
+      4. If peak demand exceeds ${currentTotalCapacity}MW at any point in the forecast:
+         - Suggest the number of additional generator units needed.
+         - Suggest the optimal capacity (MW) for these new units.
+         - Provide a priority level (Low/Medium/High/Critical).
+      5. Provide maintenance windows for 'hours'/'days' horizons only.
 
-      Return the result strictly as a JSON object matching the following structure:
+      Return strictly JSON:
       {
         "predictions": [{"timestamp": "YYYY-MM-DD HH:mm", "predicted": number}],
         "generationRequirement": number,
-        "recommendedUnits": ["Unit ID/Name"],
-        "maintenanceWindows": [{"start": "YYYY-MM-DD HH:mm", "end": "YYYY-MM-DD HH:mm", "avgLoad": number}],
-        "explanation": "Brief reasoning for decisions"
+        "recommendedUnits": ["Unit Names"],
+        "maintenanceWindows": [{"start": "string", "end": "string", "avgLoad": number}],
+        "explanation": "Brief context",
+        "upgradeAdvisory": {
+          "additionalUnitsNeeded": number,
+          "targetTotalCapacity": number,
+          "reasoning": "string",
+          "priority": "Low|Medium|High|Critical"
+        }
       }
     `,
     config: {
@@ -68,18 +80,26 @@ export const performAIForecast = async (
               }
             }
           },
-          explanation: { type: Type.STRING }
+          explanation: { type: Type.STRING },
+          upgradeAdvisory: {
+            type: Type.OBJECT,
+            properties: {
+              additionalUnitsNeeded: { type: Type.NUMBER },
+              targetTotalCapacity: { type: Type.NUMBER },
+              reasoning: { type: Type.STRING },
+              priority: { type: Type.STRING }
+            }
+          }
         },
-        required: ["predictions", "generationRequirement", "recommendedUnits", "maintenanceWindows", "explanation"]
+        required: ["predictions", "generationRequirement", "recommendedUnits", "explanation"]
       }
     }
   });
 
   try {
-    const result = JSON.parse(response.text);
-    return result as ForecastResult;
+    return JSON.parse(response.text) as ForecastResult;
   } catch (error) {
-    console.error("Failed to parse Gemini response:", error);
-    throw new Error("AI failed to generate a valid forecast.");
+    console.error("AI Error:", error);
+    throw new Error("Failed to process power system analysis.");
   }
 };

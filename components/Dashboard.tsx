@@ -4,243 +4,253 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
   ReferenceLine, Area, ComposedChart
 } from 'recharts';
-import { LoadDataPoint, ForecastResult, GeneratorUnit } from '../types';
+import { LoadDataPoint, ForecastResult, GeneratorUnit, HorizonUnit } from '../types';
 
 interface Props {
   historicalData: LoadDataPoint[];
   results: ForecastResult | null;
   units: GeneratorUnit[];
+  horizonUnit: HorizonUnit;
 }
 
-const Dashboard: React.FC<Props> = ({ historicalData, results, units }) => {
-  // Merge historical and predicted data by timestamp to handle overlaps
-  const { chartData, discrepancies, avgAccuracy } = useMemo(() => {
+const Dashboard: React.FC<Props> = ({ historicalData, results, units, horizonUnit }) => {
+  const { chartData, discrepancies, avgAccuracy, maxLoadValue } = useMemo(() => {
     const dataMap = new Map<string, any>();
+    let maxVal = 0;
 
-    // Add historical points
-    historicalData.slice(-72).forEach(d => {
+    historicalData.slice(-100).forEach(d => {
       const key = d.timestamp.trim();
-      dataMap.set(key, {
-        time: key,
-        displayTime: key.split(' ')[1] || key,
-        actual: d.load,
-        smoothed: d.smoothed,
-        predicted: null,
-        error: null
+      if (d.load > maxVal) maxVal = d.load;
+      dataMap.set(key, { 
+        time: key, 
+        actual: d.load, 
+        smoothed: d.smoothed, 
+        predicted: null 
       });
     });
 
-    // Add / Merge predicted points
     results?.predictions.forEach(p => {
-      // Normalize timestamp format (Gemini might return ISO or YYYY-MM-DD HH:mm)
-      const rawKey = p.timestamp.replace('T', ' ').substring(0, 16);
-      const key = rawKey.trim();
-      
+      const key = p.timestamp.replace('T', ' ').substring(0, 16);
+      if (p.predicted > maxVal) maxVal = p.predicted;
       const existing = dataMap.get(key);
       if (existing) {
         existing.predicted = p.predicted;
-        if (existing.actual !== null) {
-          existing.error = Math.abs(existing.actual - p.predicted);
-        }
       } else {
-        dataMap.set(key, {
-          time: key,
-          displayTime: key.split(' ')[1] || key,
-          actual: null,
-          smoothed: null,
-          predicted: p.predicted,
-          error: null
+        dataMap.set(key, { 
+          time: key, 
+          actual: null, 
+          smoothed: null, 
+          predicted: p.predicted 
         });
       }
     });
 
-    const sortedData = Array.from(dataMap.values()).sort((a, b) => a.time.localeCompare(b.time));
-    
-    // Calculate accuracy metrics for overlapping segments
-    const overlapPoints = sortedData.filter(d => d.actual !== null && d.predicted !== null);
-    const disc = overlapPoints.map(d => ({
-      time: d.time,
-      actual: d.actual,
-      predicted: d.predicted,
-      error: d.error,
-      errorPercent: (d.error / d.actual) * 100
-    }));
+    const sorted = Array.from(dataMap.values()).sort((a, b) => a.time.localeCompare(b.time));
+    const overlap = sorted.filter(d => d.actual !== null && d.predicted !== null);
+    const accuracy = overlap.length > 0 ? 100 - (overlap.reduce((acc, d) => acc + (Math.abs(d.actual - d.predicted) / d.actual), 0) / overlap.length * 100) : null;
 
-    const totalErrorPercent = disc.reduce((acc, curr) => acc + curr.errorPercent, 0);
-    const accuracy = disc.length > 0 ? 100 - (totalErrorPercent / disc.length) : null;
-
-    return { 
-      chartData: sortedData, 
-      discrepancies: disc, 
-      avgAccuracy: accuracy 
-    };
+    return { chartData: sorted, discrepancies: overlap, avgAccuracy: accuracy, maxLoadValue: maxVal };
   }, [historicalData, results]);
 
-  const peakLoad = results ? Math.max(...results.predictions.map(p => p.predicted)) : 0;
-  const totalAvailableCapacity = units.reduce((acc, u) => acc + u.capacity, 0);
+  const currentCapacity = units.reduce((acc, u) => acc + u.capacity, 0);
+  const peakPredicted = results ? Math.max(...results.predictions.map(p => p.predicted)) : 0;
+  const isDeficit = peakPredicted > currentCapacity;
 
-  // Identify "Significant Discrepancies" (e.g., > 5% error)
-  const highErrors = discrepancies.filter(d => d.errorPercent > 5);
+  // X-Axis tick formatter based on horizon unit
+  const xAxisFormatter = (tick: string) => {
+    if (!tick) return '';
+    const date = new Date(tick.replace(' ', 'T'));
+    if (isNaN(date.getTime())) return tick;
+
+    switch (horizonUnit) {
+      case 'years':
+        return date.getFullYear().toString();
+      case 'days':
+        return `${date.getMonth() + 1}/${date.getDate()}`;
+      default: // hours
+        return `${date.getHours()}:00`;
+    }
+  };
+
+  // Y-Axis unit scaling: Shift to GW if load exceeds 1000 MW
+  const useGW = maxLoadValue > 5000;
+  const yAxisFormatter = (value: number) => {
+    return useGW ? (value / 1000).toFixed(1) : value.toString();
+  };
+  const unitLabel = useGW ? 'GW' : 'MW';
 
   return (
-    <div className="space-y-8">
-      {/* Metrics Row */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-blue-500">
-          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Peak Predicted Load</p>
-          <p className="text-2xl font-black text-slate-800">{peakLoad.toFixed(1)} <span className="text-sm font-normal">MW</span></p>
-        </div>
-        <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-emerald-500">
-          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Required Generation</p>
-          <p className="text-2xl font-black text-slate-800">{results?.generationRequirement.toFixed(1) || 0} <span className="text-sm font-normal">MW</span></p>
-        </div>
-        <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-amber-500">
-          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Forecast Accuracy</p>
-          <p className="text-2xl font-black text-slate-800">
-            {avgAccuracy !== null ? `${avgAccuracy.toFixed(1)}%` : 'N/A'}
-          </p>
-        </div>
-        <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-red-500">
-          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">High Discrepancies</p>
-          <p className="text-2xl font-black text-slate-800">
-            {highErrors.length} <span className="text-sm font-normal">pts &gt; 5%</span>
-          </p>
-        </div>
-      </div>
-
-      {/* Main Load Chart with Overlap Handling */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-[450px]">
-        <div className="flex justify-between items-start mb-4">
-          <div>
-            <h3 className="text-lg font-bold text-slate-800">System Load & Forecast Comparison</h3>
-            <p className="text-xs text-slate-400">Comparing historical outcomes with AI predictions in overlapping windows.</p>
+    <div className="space-y-6">
+      {/* 1. Planning Alerts & Infrastructure Advisory */}
+      {results?.upgradeAdvisory && (
+        <div className={`p-6 rounded-3xl border-2 flex items-center gap-6 shadow-2xl transition-all ${isDeficit ? 'bg-rose-50 border-rose-200 animate-pulse' : 'bg-indigo-50 border-indigo-200'}`}>
+          <div className={`w-16 h-16 rounded-2xl flex items-center justify-center text-3xl shadow-lg ${isDeficit ? 'bg-rose-600 text-white' : 'bg-indigo-600 text-white'}`}>
+            {isDeficit ? '⚠️' : '⚡'}
           </div>
-          {avgAccuracy !== null && (
-            <div className="bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full text-xs font-bold border border-emerald-100">
-              Confidence Score: {avgAccuracy > 95 ? 'High' : avgAccuracy > 85 ? 'Medium' : 'Low'}
+          <div className="flex-1">
+            <div className="flex items-center gap-3 mb-1">
+              <h3 className="text-lg font-black text-slate-800 uppercase tracking-tighter">Infrastructure Advisory</h3>
+              <span className={`px-3 py-0.5 rounded-full text-[10px] font-black uppercase tracking-widest ${
+                results.upgradeAdvisory.priority === 'Critical' ? 'bg-red-600 text-white' : 'bg-indigo-600 text-white'
+              }`}>
+                {results.upgradeAdvisory.priority} Priority
+              </span>
             </div>
-          )}
+            <p className="text-sm font-bold text-slate-600 leading-snug">
+              {results.upgradeAdvisory.reasoning}
+            </p>
+            <div className="mt-3 flex gap-4">
+              <div className="bg-white px-4 py-2 rounded-xl shadow-sm border border-slate-100">
+                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">New Units Req.</p>
+                <p className="text-lg font-black text-slate-800">+{results.upgradeAdvisory.additionalUnitsNeeded}</p>
+              </div>
+              <div className="bg-white px-4 py-2 rounded-xl shadow-sm border border-slate-100">
+                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Target Expansion</p>
+                <p className="text-lg font-black text-indigo-600">{useGW ? (results.upgradeAdvisory.targetTotalCapacity / 1000).toFixed(1) : results.upgradeAdvisory.targetTotalCapacity} {unitLabel}</p>
+              </div>
+            </div>
+          </div>
         </div>
-        <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-            <XAxis dataKey="displayTime" interval="preserveStartEnd" minTickGap={30} />
-            <YAxis label={{ value: 'MW', angle: -90, position: 'insideLeft' }} />
-            <Tooltip 
-              contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-              formatter={(value: any, name: string) => [value?.toFixed(1) + " MW", name]}
-            />
-            <Legend verticalAlign="top" height={36} />
-            <Area 
-              type="monotone" 
-              dataKey="error" 
-              fill="#fee2e2" 
-              stroke="transparent" 
-              name="Abs. Error" 
-              legendType="none"
-            />
-            <Line 
-              type="monotone" 
-              dataKey="actual" 
-              stroke="#94a3b8" 
-              strokeWidth={2} 
-              dot={false} 
-              name="Actual Load" 
-            />
-            <Line 
-              type="monotone" 
-              dataKey="smoothed" 
-              stroke="#3b82f6" 
-              strokeWidth={1} 
-              strokeDasharray="3 3"
-              dot={false} 
-              name="Smoothed Trend" 
-            />
-            <Line 
-              type="monotone" 
-              dataKey="predicted" 
-              stroke="#ef4444" 
-              strokeWidth={3} 
-              dot={{ r: 2, fill: '#ef4444' }} 
-              name="AI Prediction" 
-            />
-            {units.map(u => (
-               <ReferenceLine key={u.id} y={u.capacity} stroke="#cbd5e1" strokeDasharray="3 3" label={{ position: 'right', value: u.name, fontSize: 8, fill: '#94a3b8' }} />
-            ))}
-          </ComposedChart>
-        </ResponsiveContainer>
+      )}
+
+      {/* 2. Enhanced KPI Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <MetricCard label="Peak Forecast" value={useGW ? (peakPredicted / 1000).toFixed(2) : peakPredicted.toFixed(1)} unit={unitLabel} color="rose" />
+        <MetricCard label="Current Capacity" value={useGW ? (currentCapacity / 1000).toFixed(2) : currentCapacity} unit={unitLabel} color="slate" />
+        <MetricCard label="Generation Margin" value={useGW ? ((currentCapacity - peakPredicted) / 1000).toFixed(2) : (currentCapacity - peakPredicted).toFixed(1)} unit={unitLabel} color={isDeficit ? 'rose' : 'emerald'} />
+        <MetricCard label="Confidence Index" value={avgAccuracy ? `${avgAccuracy.toFixed(1)}%` : 'N/A'} unit="" color="indigo" />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Unit Commitment */}
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 lg:col-span-1">
-          <h3 className="text-lg font-bold text-slate-800 mb-4">Unit Commitment</h3>
-          <div className="space-y-3">
-            {units.map(unit => {
-              const isOn = results?.recommendedUnits.includes(unit.name) || results?.recommendedUnits.includes(unit.id);
+      {/* 3. High-Clarity Main Chart */}
+      <div className="bg-white p-8 rounded-3xl shadow-xl border border-slate-100 overflow-hidden">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+          <div>
+            <h3 className="text-xl font-black text-slate-800 tracking-tight">System Load Dynamics</h3>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Scalable {horizonUnit} Analytics • All units in {unitLabel}</p>
+          </div>
+          <div className="flex flex-wrap gap-4">
+             <LegendItem color="#10b981" label="Actual" />
+             <LegendItem color="#6366f1" label="Smoothed" dashed />
+             <LegendItem color="#f43f5e" label="AI Forecast" weight="3" />
+          </div>
+        </div>
+        <div className="h-[450px] w-full -ml-4">
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={chartData}>
+              <defs>
+                <linearGradient id="colorActual" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
+                  <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="0" vertical={false} stroke="#f8fafc" />
+              <XAxis 
+                dataKey="time" 
+                axisLine={false} 
+                tickLine={false} 
+                fontSize={10} 
+                minTickGap={50} 
+                tick={{fill: '#94a3b8', fontWeight: 700}}
+                tickFormatter={xAxisFormatter}
+              />
+              <YAxis 
+                axisLine={false} 
+                tickLine={false} 
+                fontSize={10} 
+                tick={{fill: '#94a3b8', fontWeight: 700}}
+                tickFormatter={yAxisFormatter}
+              />
+              <Tooltip 
+                cursor={{stroke: '#f1f5f9', strokeWidth: 2}}
+                contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)', padding: '12px' }}
+                itemStyle={{ fontSize: '11px', fontWeight: 900, textTransform: 'uppercase' }}
+                labelFormatter={(label) => xAxisFormatter(label as string)}
+                formatter={(val: number) => [useGW ? (val / 1000).toFixed(2) + " " + unitLabel : val?.toFixed(1) + " " + unitLabel]}
+              />
+              <Area type="monotone" dataKey="actual" stroke="none" fill="url(#colorActual)" />
+              <Line type="monotone" dataKey="actual" stroke="#10b981" strokeWidth={3} dot={false} activeDot={{r: 6, strokeWidth: 0}} />
+              <Line type="monotone" dataKey="smoothed" stroke="#6366f1" strokeWidth={1} strokeDasharray="5 5" dot={false} />
+              <Line type="monotone" dataKey="predicted" stroke="#f43f5e" strokeWidth={4} dot={{r: 3, fill: '#f43f5e', strokeWidth: 0}} />
+              <ReferenceLine y={currentCapacity} stroke="#cbd5e1" strokeDasharray="8 8" label={{ position: 'right', value: `System Limit (${unitLabel})`, fontSize: 10, fontWeight: 900, fill: '#94a3b8' }} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* 4. Support Modules */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Overlap Accuracy Zoom */}
+        <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-100">
+           <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6 flex items-center gap-2">
+             <div className="w-2 h-2 rounded-full bg-rose-500"></div> Deviation Verification
+           </h4>
+           <div className="h-[200px]">
+             {discrepancies.length > 0 ? (
+               <ResponsiveContainer width="100%" height="100%">
+                 <LineChart data={discrepancies}>
+                    <XAxis dataKey="time" hide />
+                    <YAxis hide domain={['auto', 'auto']} />
+                    <Tooltip 
+                      contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}}
+                      formatter={(val: number) => [useGW ? (val / 1000).toFixed(2) + " " + unitLabel : val?.toFixed(1) + " " + unitLabel]}
+                    />
+                    <Line type="step" dataKey="actual" stroke="#94a3b8" strokeWidth={2} dot={{r: 2}} />
+                    <Line type="monotone" dataKey="predicted" stroke="#f43f5e" strokeWidth={3} dot={{r: 4}} />
+                 </LineChart>
+               </ResponsiveContainer>
+             ) : (
+               <div className="h-full flex items-center justify-center text-slate-300 italic text-xs font-bold">Awaiting Forecast Execution...</div>
+             )}
+           </div>
+        </div>
+
+        {/* Logistic Logistics */}
+        <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-100 flex flex-col">
+          <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6 flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-emerald-500"></div> Dispatch Control
+          </h4>
+          <div className="flex-1 space-y-2 overflow-y-auto max-h-[200px] pr-2 custom-scrollbar">
+            {units.map(u => {
+              const active = results?.recommendedUnits.includes(u.name);
               return (
-                <div 
-                  key={unit.id} 
-                  className={`p-3 rounded-lg border flex justify-between items-center ${isOn ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'}`}
-                >
+                <div key={u.id} className={`flex justify-between items-center p-3 rounded-2xl border transition-all ${active ? 'bg-emerald-50 border-emerald-100' : 'bg-slate-50 border-slate-100 opacity-60'}`}>
                   <div>
-                    <p className="font-bold text-slate-700 text-sm">{unit.name}</p>
-                    <p className="text-[10px] text-slate-500">{unit.capacity} MW</p>
+                    <p className="text-xs font-black text-slate-700">{u.name}</p>
+                    <p className="text-[10px] font-bold text-slate-400">{useGW ? (u.capacity / 1000).toFixed(2) : u.capacity} {unitLabel}</p>
                   </div>
-                  <span className={`px-2 py-1 rounded-full text-[9px] font-black uppercase ${isOn ? 'bg-emerald-500 text-white' : 'bg-slate-300 text-slate-600'}`}>
-                    {isOn ? 'ON' : 'OFF'}
+                  <span className={`px-3 py-1 rounded-full text-[9px] font-black ${active ? 'bg-emerald-500 text-white' : 'bg-slate-300 text-slate-500'}`}>
+                    {active ? 'ONLINE' : 'STBY'}
                   </span>
                 </div>
-              );
+              )
             })}
-          </div>
-        </div>
-
-        {/* Maintenance & Analysis */}
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 lg:col-span-2">
-          <div className="flex justify-between items-center mb-4">
-             <h3 className="text-lg font-bold text-slate-800">Forecast Deviation Analysis</h3>
-             <span className="text-[10px] font-bold text-slate-400">SIGNIFICANT EVENTS: {highErrors.length}</span>
-          </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2 max-h-[200px] overflow-y-auto pr-2">
-              <p className="text-xs font-bold text-slate-500 mb-2">High Discrepancy Log (&gt;5% Error)</p>
-              {highErrors.length > 0 ? highErrors.map((e, idx) => (
-                <div key={idx} className="flex justify-between items-center p-2 bg-red-50 rounded border border-red-100 text-[10px]">
-                  <span className="font-mono">{e.time.split(' ')[1]}</span>
-                  <span className="text-red-700 font-bold">Δ {e.errorPercent.toFixed(1)}%</span>
-                  <span className="text-slate-400">Act: {e.actual} / Pred: {e.predicted}</span>
-                </div>
-              )) : (
-                <p className="text-[10px] text-slate-400 italic">No significant deviations detected in overlap window.</p>
-              )}
-            </div>
-
-            <div className="space-y-3">
-              <p className="text-xs font-bold text-slate-500 mb-2">Suggested Action Plan</p>
-              {results?.maintenanceWindows.slice(0, 1).map((win, idx) => (
-                <div key={idx} className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
-                  <p className="text-[10px] font-bold text-amber-800 uppercase tracking-tighter">Maintenance Window Found</p>
-                  <p className="text-xs font-black text-amber-900 mt-1">
-                    {win.start.split(' ')[1]} - {win.end.split(' ')[1]}
-                  </p>
-                  <p className="text-[10px] text-amber-700 mt-1">
-                    Avg Load: {win.avgLoad.toFixed(1)} MW
-                  </p>
-                </div>
-              ))}
-              {results && (
-                <div className="p-3 bg-blue-50 text-blue-800 text-[11px] rounded-lg leading-relaxed">
-                  <strong>AI Note:</strong> {results.explanation}
-                </div>
-              )}
-            </div>
           </div>
         </div>
       </div>
     </div>
   );
 };
+
+const MetricCard = ({ label, value, unit, color }: any) => {
+  const colors: any = {
+    rose: 'text-rose-600 bg-rose-50 border-rose-100',
+    emerald: 'text-emerald-600 bg-emerald-50 border-emerald-100',
+    indigo: 'text-indigo-600 bg-indigo-50 border-indigo-100',
+    slate: 'text-slate-600 bg-slate-50 border-slate-100'
+  };
+  return (
+    <div className={`p-6 rounded-3xl shadow-sm border ${colors[color] || colors.slate}`}>
+      <p className="text-[10px] font-black uppercase tracking-widest opacity-60 mb-1">{label}</p>
+      <p className="text-3xl font-black tracking-tight">{value} <span className="text-sm font-bold opacity-40">{unit}</span></p>
+    </div>
+  );
+};
+
+const LegendItem = ({ color, label, dashed, weight }: any) => (
+  <div className="flex items-center gap-2">
+    <div className={`h-0.5 rounded-full ${dashed ? 'border-t-2 border-dashed' : ''}`} style={{ backgroundColor: dashed ? 'transparent' : color, borderTopColor: dashed ? color : 'transparent', width: weight === '3' ? '24px' : '16px', height: weight === '3' ? '3px' : '2px' }}></div>
+    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{label}</span>
+  </div>
+);
 
 export default Dashboard;

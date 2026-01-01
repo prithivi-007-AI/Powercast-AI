@@ -1,39 +1,34 @@
 
 import React from 'react';
-import { GeneratorUnit, LoadDataPoint } from '../types';
+import { GeneratorUnit, LoadDataPoint, HorizonUnit } from '../types';
 
 interface Props {
   onDataLoaded: (data: LoadDataPoint[]) => void;
   units: GeneratorUnit[];
   setUnits: (units: GeneratorUnit[]) => void;
-  horizon: number;
-  setHorizon: (val: number) => void;
+  horizonValue: number;
+  setHorizonValue: (val: number) => void;
+  horizonUnit: HorizonUnit;
+  setHorizonUnit: (val: HorizonUnit) => void;
   lookBack: number;
   setLookBack: (val: number) => void;
 }
 
 const DataInputSection: React.FC<Props> = ({ 
-  onDataLoaded, units, setUnits, horizon, setHorizon, lookBack, setLookBack 
+  onDataLoaded, units, setUnits, horizonValue, setHorizonValue, horizonUnit, setHorizonUnit, lookBack, setLookBack 
 }) => {
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = (event) => {
-      const text = event.target?.result as string;
-      const lines = text.split('\n');
+      const lines = (event.target?.result as string).split('\n');
       const parsedData: LoadDataPoint[] = [];
-
-      // Skip header, assuming timestamp,load
       for (let i = 1; i < lines.length; i++) {
         const parts = lines[i].split(',');
         if (parts.length === 2) {
-          const timestamp = parts[0].trim();
-          const load = parseFloat(parts[1].trim());
-          if (!isNaN(load)) {
-            parsedData.push({ timestamp, load });
-          }
+          const load = parseFloat(parts[1]);
+          if (!isNaN(load)) parsedData.push({ timestamp: parts[0].trim(), load });
         }
       }
       onDataLoaded(parsedData);
@@ -41,90 +36,94 @@ const DataInputSection: React.FC<Props> = ({
     reader.readAsText(file);
   };
 
-  const addUnit = () => {
-    const id = `Unit-${units.length + 1}`;
-    setUnits([...units, { id, name: id, capacity: 200, status: 'OFF' }]);
-  };
-
-  const updateUnit = (index: number, capacity: number) => {
-    const newUnits = [...units];
-    newUnits[index].capacity = capacity;
-    setUnits(newUnits);
-  };
-
-  const removeUnit = (index: number) => {
-    setUnits(units.filter((_, i) => i !== index));
+  // Provide appropriate numerical options based on the selected unit
+  const getNumericOptions = () => {
+    switch (horizonUnit) {
+      case 'hours': return [1, 3, 6, 12, 24, 48, 72];
+      case 'days': return [1, 3, 5, 7, 14, 30];
+      case 'years': return [1, 2, 5, 10, 20];
+      default: return [1, 5, 10];
+    }
   };
 
   return (
-    <div className="space-y-6 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-      <h2 className="text-xl font-bold text-slate-800 border-b pb-2">System Configuration</h2>
+    <div className="space-y-6 bg-white p-6 rounded-2xl shadow-xl border border-slate-100">
+      <div className="flex items-center gap-2 border-b border-slate-50 pb-4">
+        <div className="w-2 h-6 bg-indigo-600 rounded-full"></div>
+        <h2 className="text-xl font-black text-slate-800 tracking-tight">System Input</h2>
+      </div>
       
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="space-y-4">
         <section>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Historical Data (CSV)</label>
+          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Historical Dataset</label>
           <input 
             type="file" 
             accept=".csv"
             onChange={handleFileUpload}
-            className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+            className="block w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-[10px] file:font-black file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer"
           />
-          <p className="mt-1 text-xs text-slate-400">Format: timestamp,load (e.g. 2024-01-01 00:00,120.5)</p>
         </section>
 
-        <section className="space-y-3">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Forecast Horizon (Hours)</label>
-            <input 
-              type="number" 
-              value={horizon}
-              onChange={(e) => setHorizon(parseInt(e.target.value))}
-              className="w-full px-3 py-2 border rounded-md focus:ring-blue-500 focus:border-blue-500"
-            />
+        <section className="grid grid-cols-2 gap-3">
+          <div className="col-span-2">
+            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Forecast Horizon</label>
+            <div className="flex gap-2">
+              <select 
+                value={horizonValue}
+                onChange={(e) => setHorizonValue(parseInt(e.target.value))}
+                className="flex-[1.5] px-3 py-2 bg-slate-50 border-none rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-indigo-500"
+              >
+                {getNumericOptions().map(v => <option key={v} value={v}>{v}</option>)}
+              </select>
+              <select 
+                value={horizonUnit}
+                onChange={(e) => {
+                  const newUnit = e.target.value as HorizonUnit;
+                  setHorizonUnit(newUnit);
+                  // Reset value to first available if current value isn't in new options
+                  const opts = newUnit === 'hours' ? [1, 3, 6, 12, 24, 48, 72] : newUnit === 'days' ? [1, 3, 5, 7, 14, 30] : [1, 2, 5, 10, 20];
+                  if (!opts.includes(horizonValue)) setHorizonValue(opts[0]);
+                }}
+                className="flex-1 px-3 py-2 bg-slate-50 border-none rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="hours">Hours</option>
+                <option value="days">Days</option>
+                <option value="years">Years</option>
+              </select>
+            </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Look-back Window (Hours)</label>
-            <input 
-              type="number" 
-              value={lookBack}
-              onChange={(e) => setLookBack(parseInt(e.target.value))}
-              className="w-full px-3 py-2 border rounded-md focus:ring-blue-500 focus:border-blue-500"
-            />
+        </section>
+
+        <section>
+          <div className="flex justify-between items-center mb-2">
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Generation Fleet</label>
+            <button 
+              onClick={() => setUnits([...units, { id: `U${units.length + 1}`, name: `Unit ${units.length + 1}`, capacity: 200, status: 'OFF' }])}
+              className="text-[10px] font-black bg-indigo-600 text-white px-3 py-1 rounded-lg shadow-lg shadow-indigo-200"
+            >
+              + Add
+            </button>
+          </div>
+          <div className="space-y-2 max-h-[200px] overflow-y-auto pr-2 custom-scrollbar">
+            {units.map((unit, idx) => (
+              <div key={unit.id} className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-100">
+                <span className="text-[10px] font-black text-slate-400 w-8">{unit.id}</span>
+                <input 
+                  type="number" 
+                  value={unit.capacity}
+                  onChange={(e) => {
+                    const n = [...units];
+                    n[idx].capacity = parseFloat(e.target.value);
+                    setUnits(n);
+                  }}
+                  className="flex-1 bg-transparent border-none text-xs font-bold text-slate-700 focus:ring-0"
+                />
+                <button onClick={() => setUnits(units.filter((_, i) => i !== idx))} className="text-slate-300 hover:text-red-500 px-1 font-bold">×</button>
+              </div>
+            ))}
           </div>
         </section>
       </div>
-
-      <section>
-        <div className="flex justify-between items-center mb-2">
-          <label className="text-sm font-medium text-slate-700">Generator Units</label>
-          <button 
-            onClick={addUnit}
-            className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 transition"
-          >
-            + Add Unit
-          </button>
-        </div>
-        <div className="space-y-2">
-          {units.map((unit, idx) => (
-            <div key={unit.id} className="flex items-center gap-2">
-              <span className="text-sm font-mono text-slate-500 w-16">{unit.name}</span>
-              <input 
-                type="number" 
-                value={unit.capacity}
-                onChange={(e) => updateUnit(idx, parseFloat(e.target.value))}
-                placeholder="Capacity (MW)"
-                className="flex-1 px-3 py-1 text-sm border rounded-md"
-              />
-              <button 
-                onClick={() => removeUnit(idx)}
-                className="text-red-500 hover:text-red-700 px-2"
-              >
-                ✕
-              </button>
-            </div>
-          ))}
-        </div>
-      </section>
     </div>
   );
 };
