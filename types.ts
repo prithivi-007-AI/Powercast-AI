@@ -6,6 +6,9 @@ export interface LoadDataPoint {
   load: number;
   smoothed?: number;
   predicted?: number;
+  upperBound?: number;
+  lowerBound?: number;
+  isAnomaly?: boolean;
 }
 
 export interface GeneratorUnit {
@@ -22,13 +25,25 @@ export interface UpgradeRecommendation {
   priority: 'Low' | 'Medium' | 'High' | 'Critical';
 }
 
+export interface MaintenanceSchedule {
+  start: string;
+  end: string;
+  suggestedUnit: string;
+  avgLoadDuringWindow: number;
+  safetyMargin: number; // Percent of capacity remaining during maintenance
+  priority: 'Routine' | 'Deferred' | 'Urgent';
+}
+
 export interface ForecastResult {
   predictions: LoadDataPoint[];
   generationRequirement: number;
   recommendedUnits: string[];
-  maintenanceWindows: { start: string; end: string; avgLoad: number }[];
+  maintenanceWindows: MaintenanceSchedule[];
   explanation: string;
   upgradeAdvisory?: UpgradeRecommendation;
+  // Economic Metrics
+  projectedCostPerHour: number;
+  systemEfficiency: number; // 0-100
 }
 
 export interface AppState {

@@ -1,8 +1,8 @@
 
 import React, { useMemo } from 'react';
 import { 
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
-  ReferenceLine, Area, ComposedChart
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
+  Area, AreaChart, ReferenceLine
 } from 'recharts';
 import { LoadDataPoint, ForecastResult, GeneratorUnit, HorizonUnit } from '../types';
 
@@ -14,216 +14,240 @@ interface Props {
 }
 
 const Dashboard: React.FC<Props> = ({ historicalData, results, units, horizonUnit }) => {
-  const { chartData, discrepancies, avgAccuracy, maxLoadValue } = useMemo(() => {
-    const dataMap = new Map<string, any>();
+  // Merge historical and forecast data for the chart
+  const { chartData, maxLoadValue } = useMemo(() => {
     let maxVal = 0;
+    const combinedData: any[] = [];
 
-    historicalData.slice(-100).forEach(d => {
-      const key = d.timestamp.trim();
-      if (d.load > maxVal) maxVal = d.load;
-      dataMap.set(key, { 
-        time: key, 
-        actual: d.load, 
-        smoothed: d.smoothed, 
-        predicted: null 
+    // 1. Add historical data points
+    const historicalTail = historicalData.slice(-72); // Last 3 days if hourly
+    historicalTail.forEach(d => {
+      const val = Number(d.load) || 0;
+      if (val > maxVal) maxVal = val;
+      combinedData.push({
+        time: d.timestamp,
+        actual: val,
+        forecast: null,
       });
     });
 
-    results?.predictions.forEach(p => {
-      const key = p.timestamp.replace('T', ' ').substring(0, 16);
-      if (p.predicted > maxVal) maxVal = p.predicted;
-      const existing = dataMap.get(key);
-      if (existing) {
-        existing.predicted = p.predicted;
-      } else {
-        dataMap.set(key, { 
-          time: key, 
-          actual: null, 
-          smoothed: null, 
-          predicted: p.predicted 
+    // 2. Add prediction data points
+    if (results?.predictions && results.predictions.length > 0) {
+      results.predictions.forEach((p, idx) => {
+        const val = Number(p.predicted) || 0;
+        if (val > maxVal) maxVal = val;
+
+        // If this is the first prediction, we "bridge" it from the last historical point
+        // to prevent a gap in the line chart.
+        if (idx === 0 && combinedData.length > 0) {
+           const lastActual = combinedData[combinedData.length - 1];
+           lastActual.forecast = lastActual.actual;
+        }
+
+        combinedData.push({
+          time: p.timestamp,
+          actual: null,
+          forecast: val,
         });
-      }
-    });
+      });
+    }
 
-    const sorted = Array.from(dataMap.values()).sort((a, b) => a.time.localeCompare(b.time));
-    const overlap = sorted.filter(d => d.actual !== null && d.predicted !== null);
-    const accuracy = overlap.length > 0 ? 100 - (overlap.reduce((acc, d) => acc + (Math.abs(d.actual - d.predicted) / d.actual), 0) / overlap.length * 100) : null;
-
-    return { chartData: sorted, discrepancies: overlap, avgAccuracy: accuracy, maxLoadValue: maxVal };
+    return { chartData: combinedData, maxLoadValue: maxVal };
   }, [historicalData, results]);
 
-  const currentCapacity = units.reduce((acc, u) => acc + u.capacity, 0);
-  const peakPredicted = results ? Math.max(...results.predictions.map(p => p.predicted)) : 0;
-  const isDeficit = peakPredicted > currentCapacity;
+  const currentCapacity = units.reduce((acc, u) => acc + (Number(u.capacity) || 0), 0);
+  const peakForecast = results?.predictions?.length 
+    ? Math.max(...results.predictions.map(p => Number(p.predicted) || 0)) 
+    : 0;
 
-  // X-Axis tick formatter based on horizon unit
-  const xAxisFormatter = (tick: string) => {
-    if (!tick) return '';
+  const useGW = maxLoadValue > 5000;
+  const unitLabel = useGW ? 'GW' : 'MW';
+
+  const formatYAxis = (val: any) => {
+    const num = Number(val);
+    return useGW ? (num / 1000).toFixed(1) : Math.round(num).toString();
+  };
+
+  const formatXAxis = (tick: string) => {
     const date = new Date(tick.replace(' ', 'T'));
     if (isNaN(date.getTime())) return tick;
-
-    switch (horizonUnit) {
-      case 'years':
-        return date.getFullYear().toString();
-      case 'days':
-        return `${date.getMonth() + 1}/${date.getDate()}`;
-      default: // hours
-        return `${date.getHours()}:00`;
-    }
+    if (horizonUnit === 'hours') return `${date.getHours()}:00`;
+    return `${date.getMonth() + 1}/${date.getDate()}`;
   };
-
-  // Y-Axis unit scaling: Shift to GW if load exceeds 1000 MW
-  const useGW = maxLoadValue > 5000;
-  const yAxisFormatter = (value: number) => {
-    return useGW ? (value / 1000).toFixed(1) : value.toString();
-  };
-  const unitLabel = useGW ? 'GW' : 'MW';
 
   return (
     <div className="space-y-6">
-      {/* 1. Planning Alerts & Infrastructure Advisory */}
-      {results?.upgradeAdvisory && (
-        <div className={`p-6 rounded-3xl border-2 flex items-center gap-6 shadow-2xl transition-all ${isDeficit ? 'bg-rose-50 border-rose-200 animate-pulse' : 'bg-indigo-50 border-indigo-200'}`}>
-          <div className={`w-16 h-16 rounded-2xl flex items-center justify-center text-3xl shadow-lg ${isDeficit ? 'bg-rose-600 text-white' : 'bg-indigo-600 text-white'}`}>
-            {isDeficit ? '⚠️' : '⚡'}
-          </div>
-          <div className="flex-1">
-            <div className="flex items-center gap-3 mb-1">
-              <h3 className="text-lg font-black text-slate-800 uppercase tracking-tighter">Infrastructure Advisory</h3>
-              <span className={`px-3 py-0.5 rounded-full text-[10px] font-black uppercase tracking-widest ${
-                results.upgradeAdvisory.priority === 'Critical' ? 'bg-red-600 text-white' : 'bg-indigo-600 text-white'
-              }`}>
-                {results.upgradeAdvisory.priority} Priority
-              </span>
-            </div>
-            <p className="text-sm font-bold text-slate-600 leading-snug">
-              {results.upgradeAdvisory.reasoning}
-            </p>
-            <div className="mt-3 flex gap-4">
-              <div className="bg-white px-4 py-2 rounded-xl shadow-sm border border-slate-100">
-                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">New Units Req.</p>
-                <p className="text-lg font-black text-slate-800">+{results.upgradeAdvisory.additionalUnitsNeeded}</p>
-              </div>
-              <div className="bg-white px-4 py-2 rounded-xl shadow-sm border border-slate-100">
-                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Target Expansion</p>
-                <p className="text-lg font-black text-indigo-600">{useGW ? (results.upgradeAdvisory.targetTotalCapacity / 1000).toFixed(1) : results.upgradeAdvisory.targetTotalCapacity} {unitLabel}</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 2. Enhanced KPI Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricCard label="Peak Forecast" value={useGW ? (peakPredicted / 1000).toFixed(2) : peakPredicted.toFixed(1)} unit={unitLabel} color="rose" />
-        <MetricCard label="Current Capacity" value={useGW ? (currentCapacity / 1000).toFixed(2) : currentCapacity} unit={unitLabel} color="slate" />
-        <MetricCard label="Generation Margin" value={useGW ? ((currentCapacity - peakPredicted) / 1000).toFixed(2) : (currentCapacity - peakPredicted).toFixed(1)} unit={unitLabel} color={isDeficit ? 'rose' : 'emerald'} />
-        <MetricCard label="Confidence Index" value={avgAccuracy ? `${avgAccuracy.toFixed(1)}%` : 'N/A'} unit="" color="indigo" />
+      {/* Financial and Operational Metrics */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <MetricBox 
+          label="Peak Demand" 
+          value={useGW ? (peakForecast / 1000).toFixed(2) : Math.round(peakForecast).toString()} 
+          unit={unitLabel}
+          color="indigo"
+        />
+        <MetricBox 
+          label="System Cost" 
+          value={results ? `₹${(results.projectedCostPerHour / 1000).toFixed(1)}k` : '---'} 
+          unit="/hr"
+          color="emerald"
+        />
+        <MetricBox 
+          label="Total Fleet" 
+          value={useGW ? (currentCapacity / 1000).toFixed(2) : currentCapacity.toString()} 
+          unit={unitLabel}
+          color="slate"
+        />
+        <MetricBox 
+          label="Op. Efficiency" 
+          value={results ? `${Math.round(results.systemEfficiency)}%` : '---'} 
+          unit=""
+          color="rose"
+        />
       </div>
 
-      {/* 3. High-Clarity Main Chart */}
-      <div className="bg-white p-8 rounded-3xl shadow-xl border border-slate-100 overflow-hidden">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
-          <div>
-            <h3 className="text-xl font-black text-slate-800 tracking-tight">System Load Dynamics</h3>
-            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Scalable {horizonUnit} Analytics • All units in {unitLabel}</p>
-          </div>
-          <div className="flex flex-wrap gap-4">
-             <LegendItem color="#10b981" label="Actual" />
-             <LegendItem color="#6366f1" label="Smoothed" dashed />
-             <LegendItem color="#f43f5e" label="AI Forecast" weight="3" />
+      {/* Main Base Chart Design */}
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-lg font-bold text-slate-800 tracking-tight">Load Projection Profile</h3>
+          <div className="flex items-center gap-4 text-[10px] font-bold uppercase tracking-widest">
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-sm bg-slate-300"></div>
+              <span className="text-slate-400">Actual</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-sm bg-indigo-500"></div>
+              <span className="text-slate-400">Forecast</span>
+            </div>
           </div>
         </div>
-        <div className="h-[450px] w-full -ml-4">
+
+        <div className="h-[380px] w-full">
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={chartData}>
+            <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
               <defs>
                 <linearGradient id="colorActual" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
-                  <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                  <stop offset="5%" stopColor="#94a3b8" stopOpacity={0.2}/>
+                  <stop offset="95%" stopColor="#94a3b8" stopOpacity={0}/>
+                </linearGradient>
+                <linearGradient id="colorForecast" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
+                  <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="0" vertical={false} stroke="#f8fafc" />
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
               <XAxis 
                 dataKey="time" 
-                axisLine={false} 
-                tickLine={false} 
-                fontSize={10} 
-                minTickGap={50} 
-                tick={{fill: '#94a3b8', fontWeight: 700}}
-                tickFormatter={xAxisFormatter}
+                tickFormatter={formatXAxis}
+                axisLine={false}
+                tickLine={false}
+                fontSize={10}
+                minTickGap={40}
+                tick={{ fill: '#94a3b8', fontWeight: 600 }}
               />
               <YAxis 
-                axisLine={false} 
-                tickLine={false} 
-                fontSize={10} 
-                tick={{fill: '#94a3b8', fontWeight: 700}}
-                tickFormatter={yAxisFormatter}
+                tickFormatter={formatYAxis}
+                axisLine={false}
+                tickLine={false}
+                fontSize={10}
+                tick={{ fill: '#94a3b8', fontWeight: 600 }}
               />
               <Tooltip 
-                cursor={{stroke: '#f1f5f9', strokeWidth: 2}}
-                contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)', padding: '12px' }}
-                itemStyle={{ fontSize: '11px', fontWeight: 900, textTransform: 'uppercase' }}
-                labelFormatter={(label) => xAxisFormatter(label as string)}
-                formatter={(val: number) => [useGW ? (val / 1000).toFixed(2) + " " + unitLabel : val?.toFixed(1) + " " + unitLabel]}
+                contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}
+                formatter={(val: any, name: string) => [`${Number(val).toFixed(1)} ${unitLabel}`, name === 'actual' ? 'Historical' : 'AI Predicted']}
               />
-              <Area type="monotone" dataKey="actual" stroke="none" fill="url(#colorActual)" />
-              <Line type="monotone" dataKey="actual" stroke="#10b981" strokeWidth={3} dot={false} activeDot={{r: 6, strokeWidth: 0}} />
-              <Line type="monotone" dataKey="smoothed" stroke="#6366f1" strokeWidth={1} strokeDasharray="5 5" dot={false} />
-              <Line type="monotone" dataKey="predicted" stroke="#f43f5e" strokeWidth={4} dot={{r: 3, fill: '#f43f5e', strokeWidth: 0}} />
-              <ReferenceLine y={currentCapacity} stroke="#cbd5e1" strokeDasharray="8 8" label={{ position: 'right', value: `System Limit (${unitLabel})`, fontSize: 10, fontWeight: 900, fill: '#94a3b8' }} />
-            </ComposedChart>
+              <Area 
+                type="monotone" 
+                dataKey="actual" 
+                stroke="#94a3b8" 
+                strokeWidth={2} 
+                fillOpacity={1} 
+                fill="url(#colorActual)" 
+                connectNulls
+              />
+              <Area 
+                type="monotone" 
+                dataKey="forecast" 
+                stroke="#6366f1" 
+                strokeWidth={3} 
+                fillOpacity={1} 
+                fill="url(#colorForecast)" 
+                connectNulls
+              />
+              <ReferenceLine 
+                y={currentCapacity} 
+                stroke="#ef4444" 
+                strokeDasharray="5 5" 
+                label={{ position: 'top', value: 'Fleet Capacity', fill: '#ef4444', fontSize: 10, fontWeight: 'bold' }} 
+              />
+            </AreaChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      {/* 4. Support Modules */}
+      {/* Strategic Insight */}
+      {results?.explanation && (
+        <div className="bg-slate-900 rounded-2xl p-6 text-white shadow-lg border border-slate-800">
+           <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-3">AI Intelligence Report</h4>
+           <p className="text-sm font-medium leading-relaxed text-slate-300">{results.explanation}</p>
+        </div>
+      )}
+
+      {/* Fleet & Maintenance Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Overlap Accuracy Zoom */}
-        <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-100">
-           <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6 flex items-center gap-2">
-             <div className="w-2 h-2 rounded-full bg-rose-500"></div> Deviation Verification
-           </h4>
-           <div className="h-[200px]">
-             {discrepancies.length > 0 ? (
-               <ResponsiveContainer width="100%" height="100%">
-                 <LineChart data={discrepancies}>
-                    <XAxis dataKey="time" hide />
-                    <YAxis hide domain={['auto', 'auto']} />
-                    <Tooltip 
-                      contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}}
-                      formatter={(val: number) => [useGW ? (val / 1000).toFixed(2) + " " + unitLabel : val?.toFixed(1) + " " + unitLabel]}
-                    />
-                    <Line type="step" dataKey="actual" stroke="#94a3b8" strokeWidth={2} dot={{r: 2}} />
-                    <Line type="monotone" dataKey="predicted" stroke="#f43f5e" strokeWidth={3} dot={{r: 4}} />
-                 </LineChart>
-               </ResponsiveContainer>
-             ) : (
-               <div className="h-full flex items-center justify-center text-slate-300 italic text-xs font-bold">Awaiting Forecast Execution...</div>
-             )}
-           </div>
+        {/* Recommended Dispatch Fleet */}
+        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+          <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">Recommended Dispatch Fleet</h4>
+          <div className="flex flex-wrap gap-2">
+            {units.map(u => {
+              const isRecommended = results?.recommendedUnits.includes(u.name);
+              return (
+                <div 
+                  key={u.id} 
+                  className={`px-4 py-2 rounded-xl border text-xs font-bold transition-all ${
+                    isRecommended 
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-700' 
+                      : 'bg-slate-50 border-slate-100 text-slate-400 opacity-60'
+                  }`}
+                >
+                  {u.name} • {u.capacity}MW
+                </div>
+              );
+            })}
+            {(!results) && <div className="text-xs text-slate-300 italic">Perform analysis to see dispatch recommendations</div>}
+          </div>
         </div>
 
-        {/* Logistic Logistics */}
-        <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-100 flex flex-col">
-          <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6 flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-emerald-500"></div> Dispatch Control
-          </h4>
-          <div className="flex-1 space-y-2 overflow-y-auto max-h-[200px] pr-2 custom-scrollbar">
-            {units.map(u => {
-              const active = results?.recommendedUnits.includes(u.name);
-              return (
-                <div key={u.id} className={`flex justify-between items-center p-3 rounded-2xl border transition-all ${active ? 'bg-emerald-50 border-emerald-100' : 'bg-slate-50 border-slate-100 opacity-60'}`}>
-                  <div>
-                    <p className="text-xs font-black text-slate-700">{u.name}</p>
-                    <p className="text-[10px] font-bold text-slate-400">{useGW ? (u.capacity / 1000).toFixed(2) : u.capacity} {unitLabel}</p>
+        {/* Maintenance Windows */}
+        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+          <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">AI Maintenance Strategy</h4>
+          <div className="space-y-3">
+            {results?.maintenanceWindows && results.maintenanceWindows.length > 0 ? (
+              results.maintenanceWindows.map((win, idx) => (
+                <div key={idx} className="flex justify-between items-center p-3 rounded-xl bg-slate-50 border border-slate-100 hover:border-indigo-100 transition-colors">
+                  <div className="flex flex-col">
+                    <span className="text-xs font-black text-slate-700">{win.suggestedUnit}</span>
+                    <span className="text-[10px] font-bold text-slate-400">{win.start} — {win.end}</span>
                   </div>
-                  <span className={`px-3 py-1 rounded-full text-[9px] font-black ${active ? 'bg-emerald-500 text-white' : 'bg-slate-300 text-slate-500'}`}>
-                    {active ? 'ONLINE' : 'STBY'}
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <div className="flex flex-col items-end">
+                      <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Safety Margin</span>
+                      <span className={`text-[11px] font-black ${win.safetyMargin < 10 ? 'text-rose-500' : 'text-emerald-500'}`}>
+                        {win.safetyMargin.toFixed(1)}%
+                      </span>
+                    </div>
+                    <span className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase ${
+                      win.priority === 'Urgent' ? 'bg-rose-100 text-rose-700' : 
+                      win.priority === 'Deferred' ? 'bg-amber-100 text-amber-700' : 
+                      'bg-emerald-100 text-emerald-700'
+                    }`}>
+                      {win.priority}
+                    </span>
+                  </div>
                 </div>
-              )
-            })}
+              ))
+            ) : (
+              <div className="text-xs text-slate-300 italic">No maintenance windows identified in current horizon</div>
+            )}
           </div>
         </div>
       </div>
@@ -231,26 +255,19 @@ const Dashboard: React.FC<Props> = ({ historicalData, results, units, horizonUni
   );
 };
 
-const MetricCard = ({ label, value, unit, color }: any) => {
-  const colors: any = {
-    rose: 'text-rose-600 bg-rose-50 border-rose-100',
-    emerald: 'text-emerald-600 bg-emerald-50 border-emerald-100',
-    indigo: 'text-indigo-600 bg-indigo-50 border-indigo-100',
-    slate: 'text-slate-600 bg-slate-50 border-slate-100'
+const MetricBox = ({ label, value, unit, color }: any) => {
+  const themes: any = {
+    indigo: 'bg-indigo-50 border-indigo-100 text-indigo-700',
+    emerald: 'bg-emerald-50 border-emerald-100 text-emerald-700',
+    rose: 'bg-rose-50 border-rose-100 text-rose-700',
+    slate: 'bg-slate-50 border-slate-100 text-slate-700'
   };
   return (
-    <div className={`p-6 rounded-3xl shadow-sm border ${colors[color] || colors.slate}`}>
-      <p className="text-[10px] font-black uppercase tracking-widest opacity-60 mb-1">{label}</p>
-      <p className="text-3xl font-black tracking-tight">{value} <span className="text-sm font-bold opacity-40">{unit}</span></p>
+    <div className={`p-4 rounded-2xl border ${themes[color]}`}>
+      <p className="text-[9px] font-black uppercase tracking-widest mb-1 opacity-70">{label}</p>
+      <p className="text-xl font-black">{value}<span className="text-[10px] font-bold ml-1 opacity-50">{unit}</span></p>
     </div>
   );
 };
-
-const LegendItem = ({ color, label, dashed, weight }: any) => (
-  <div className="flex items-center gap-2">
-    <div className={`h-0.5 rounded-full ${dashed ? 'border-t-2 border-dashed' : ''}`} style={{ backgroundColor: dashed ? 'transparent' : color, borderTopColor: dashed ? color : 'transparent', width: weight === '3' ? '24px' : '16px', height: weight === '3' ? '3px' : '2px' }}></div>
-    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{label}</span>
-  </div>
-);
 
 export default Dashboard;

@@ -12,43 +12,34 @@ export const performAIForecast = async (
   units: GeneratorUnit[]
 ): Promise<ForecastResult> => {
   const recentData = historicalData.slice(-lookBack);
-  const dataSummary = recentData.map(d => `[${d.timestamp}, ${d.load}]`).join(", ");
-  const currentTotalCapacity = units.reduce((acc, u) => acc + u.capacity, 0);
-  const unitsSummary = units.map(u => `${u.name}: ${u.capacity}MW`).join(", ");
-
-  const isLongTerm = horizonUnit === 'years' || (horizonUnit === 'days' && horizonValue > 30);
+  // Summarize data for the AI context
+  const dataSummary = recentData.map(d => `[${d.timestamp},${d.load}${d.isAnomaly ? ',A' : ''}]`).join(";");
+  const unitsSummary = units.map(u => `${u.name}(${u.capacity}MW)`).join(",");
 
   const response = await ai.models.generateContent({
-    model: "gemini-3-pro-preview",
+    model: "gemini-flash-latest",
     contents: `
-      You are a Senior Power Systems Consultant.
-      Historical Context: ${dataSummary}
-      Current Infrastructure: ${unitsSummary} (Total Capacity: ${currentTotalCapacity}MW)
-      Forecast Task: Predict next ${horizonValue} ${horizonUnit}.
-
-      Requirements:
-      1. Generate a load forecast for the specified horizon. If unit is 'years', assume a reasonable annual load growth (e.g., 2-5%) based on the provided trend.
-      2. If the horizon is 'hours' or 'days', include a 6-hour overlap with the latest historical data for accuracy checking.
-      3. Calculate peak demand and total generation requirement (+15% reserve margin).
-      4. If peak demand exceeds ${currentTotalCapacity}MW at any point in the forecast:
-         - Suggest the number of additional generator units needed.
-         - Suggest the optimal capacity (MW) for these new units.
-         - Provide a priority level (Low/Medium/High/Critical).
-      5. Provide maintenance windows for 'hours'/'days' horizons only.
-
-      Return strictly JSON:
+      Context: Load points (Time,MW,A=Anomaly): ${dataSummary}
+      Fleet: ${unitsSummary}
+      Goal: High-precision Probabilistic Forecast for the next ${horizonValue} ${horizonUnit}.
+      
+      Calculation Requirements:
+      1. Predict load + 95% Confidence Interval (lowerBound/upperBound).
+      2. Unit Commitment: Select units to meet peak load + 15% reserve.
+      3. Economics: Estimate projectedCostPerHour in Indian Rupees (₹). Use an average cost of ₹6,250 per MWh as a baseline for the region.
+      4. Efficiency: Calculate systemEfficiency (Load/Active Capacity %).
+      5. Timestamps: Ensure prediction timestamps continue sequentially from the last provided point (${historicalData[historicalData.length - 1]?.timestamp}).
+      
+      Output JSON:
       {
-        "predictions": [{"timestamp": "YYYY-MM-DD HH:mm", "predicted": number}],
+        "predictions": [{"timestamp": "YYYY-MM-DD HH:mm", "predicted": number, "lowerBound": number, "upperBound": number}],
         "generationRequirement": number,
-        "recommendedUnits": ["Unit Names"],
-        "maintenanceWindows": [{"start": "string", "end": "string", "avgLoad": number}],
-        "explanation": "Brief context",
-        "upgradeAdvisory": {
-          "additionalUnitsNeeded": number,
-          "targetTotalCapacity": number,
-          "reasoning": "string",
-          "priority": "Low|Medium|High|Critical"
-        }
+        "recommendedUnits": ["string"],
+        "maintenanceWindows": [{"start": "string", "end": "string", "suggestedUnit": "string", "avgLoadDuringWindow": number, "safetyMargin": number, "priority": "Routine|Urgent"}],
+        "explanation": "string",
+        "projectedCostPerHour": number,
+        "systemEfficiency": number,
+        "upgradeAdvisory": {"additionalUnitsNeeded": number, "targetTotalCapacity": number, "reasoning": "string", "priority": "Low|Critical"}
       }
     `,
     config: {
@@ -62,9 +53,11 @@ export const performAIForecast = async (
               type: Type.OBJECT,
               properties: {
                 timestamp: { type: Type.STRING },
-                predicted: { type: Type.NUMBER }
+                predicted: { type: Type.NUMBER },
+                lowerBound: { type: Type.NUMBER },
+                upperBound: { type: Type.NUMBER }
               },
-              required: ["timestamp", "predicted"]
+              required: ["timestamp", "predicted", "lowerBound", "upperBound"]
             }
           },
           generationRequirement: { type: Type.NUMBER },
@@ -76,11 +69,16 @@ export const performAIForecast = async (
               properties: {
                 start: { type: Type.STRING },
                 end: { type: Type.STRING },
-                avgLoad: { type: Type.NUMBER }
+                suggestedUnit: { type: Type.STRING },
+                avgLoadDuringWindow: { type: Type.NUMBER },
+                safetyMargin: { type: Type.NUMBER },
+                priority: { type: Type.STRING }
               }
             }
           },
           explanation: { type: Type.STRING },
+          projectedCostPerHour: { type: Type.NUMBER },
+          systemEfficiency: { type: Type.NUMBER },
           upgradeAdvisory: {
             type: Type.OBJECT,
             properties: {
@@ -91,15 +89,16 @@ export const performAIForecast = async (
             }
           }
         },
-        required: ["predictions", "generationRequirement", "recommendedUnits", "explanation"]
+        required: ["predictions", "generationRequirement", "recommendedUnits", "explanation", "maintenanceWindows", "projectedCostPerHour", "systemEfficiency"]
       }
     }
   });
 
   try {
-    return JSON.parse(response.text) as ForecastResult;
+    const text = response.text;
+    return JSON.parse(text) as ForecastResult;
   } catch (error) {
     console.error("AI Error:", error);
-    throw new Error("Failed to process power system analysis.");
+    throw new Error("Complex analysis failed. Check data granularity.");
   }
 };

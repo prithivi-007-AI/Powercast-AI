@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { LoadDataPoint, GeneratorUnit, AppState, HorizonUnit } from './types';
 import DataInputSection from './components/DataInputSection';
 import Dashboard from './components/Dashboard';
-import { applySavitzkyGolay } from './services/processing';
+import { applySavitzkyGolay, detectAnomalies } from './services/processing';
 import { performAIForecast } from './services/geminiService';
 
 const DEFAULT_UNITS: GeneratorUnit[] = [
@@ -19,7 +19,6 @@ const App: React.FC = () => {
     forecastHorizonUnit: 'hours',
     lookBackWindow: 48,
     units: DEFAULT_UNITS,
-    // Fix: Removed 'boolean =' which was causing a syntax error as it's a type, not a value.
     isProcessing: false,
     results: null
   });
@@ -29,17 +28,32 @@ const App: React.FC = () => {
   const generateSampleData = () => {
     const sample: LoadDataPoint[] = [];
     const now = new Date();
-    for (let i = 100; i >= 0; i--) {
+    for (let i = 120; i >= 0; i--) {
       const time = new Date(now.getTime() - i * 3600000);
       const hour = time.getHours();
-      const baseLoad = 150 + 80 * Math.sin((hour - 6) * Math.PI / 12);
+      let load = 150 + 80 * Math.sin((hour - 6) * Math.PI / 12);
+      
+      // Inject some synthetic anomalies
+      if (i === 40) load += 100; // Spike
+      if (i === 80) load -= 60;  // Drop
+      
       sample.push({
         timestamp: time.toISOString().replace('T', ' ').substring(0, 16),
-        load: parseFloat((baseLoad + (Math.random() * 15)).toFixed(2))
+        load: parseFloat((load + (Math.random() * 10)).toFixed(2))
       });
     }
+
     const smoothed = applySavitzkyGolay(sample.map(d => d.load));
-    setState(prev => ({ ...prev, historicalData: sample.map((d, i) => ({ ...d, smoothed: smoothed[i] })) }));
+    const anomalies = detectAnomalies(sample.map(d => d.load));
+    
+    setState(prev => ({ 
+      ...prev, 
+      historicalData: sample.map((d, i) => ({ 
+        ...d, 
+        smoothed: smoothed[i],
+        isAnomaly: anomalies[i]
+      })) 
+    }));
   };
 
   const runAnalysis = async () => {
@@ -54,7 +68,7 @@ const App: React.FC = () => {
       );
       setState(prev => ({ ...prev, results, isProcessing: false }));
     } catch (err) {
-      alert("Analysis engine error. Check console.");
+      alert("Analysis error. Please verify input data.");
       setState(prev => ({ ...prev, isProcessing: false }));
     }
   };
@@ -75,11 +89,11 @@ const App: React.FC = () => {
           onClick={runAnalysis}
           disabled={state.isProcessing}
           className={`px-8 py-3 rounded-2xl font-black text-sm transition-all flex items-center gap-2 ${
-            state.isProcessing ? 'bg-slate-100 text-slate-400' : 'bg-slate-900 text-white hover:bg-slate-800 shadow-2xl active:scale-95'
+            state.isProcessing ? 'bg-slate-100 text-slate-400 cursor-wait' : 'bg-slate-900 text-white hover:bg-slate-800 shadow-2xl active:scale-95'
           }`}
         >
           {state.isProcessing && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>}
-          {state.isProcessing ? 'CALCULATING...' : 'EXECUTE FORECAST'}
+          {state.isProcessing ? 'PROCESSING...' : 'EXECUTE FORECAST'}
         </button>
       </nav>
 
@@ -87,7 +101,11 @@ const App: React.FC = () => {
         <aside className="xl:col-span-1">
           <DataInputSection 
             {...state}
-            onDataLoaded={(d) => setState(prev => ({ ...prev, historicalData: d }))}
+            onDataLoaded={(d) => {
+                const smoothed = applySavitzkyGolay(d.map(p => p.load));
+                const anomalies = detectAnomalies(d.map(p => p.load));
+                setState(prev => ({ ...prev, historicalData: d.map((p, i) => ({ ...p, smoothed: smoothed[i], isAnomaly: anomalies[i] })) }));
+            }}
             setUnits={(u) => setState(prev => ({ ...prev, units: u }))}
             setHorizonValue={(v) => setState(prev => ({ ...prev, forecastHorizonValue: v }))}
             setHorizonUnit={(u) => setState(prev => ({ ...prev, forecastHorizonUnit: u }))}
@@ -98,12 +116,12 @@ const App: React.FC = () => {
             <h5 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-3">System Engine</h5>
             <div className="space-y-3">
               <div className="flex justify-between items-center text-[10px] font-bold">
-                <span className="text-slate-400">Smoothing</span>
-                <span className="text-emerald-400">ACTIVE (SG)</span>
+                <span className="text-slate-400">Analysis Engine</span>
+                <span className="text-emerald-400">Gemini Flash (Stable)</span>
               </div>
               <div className="flex justify-between items-center text-[10px] font-bold">
-                <span className="text-slate-400">Inference</span>
-                <span className="text-indigo-400">LLM-LSTM HYBRID</span>
+                <span className="text-slate-400">Anomaly Logic</span>
+                <span className="text-indigo-400">Rolling Z-Score</span>
               </div>
             </div>
           </div>

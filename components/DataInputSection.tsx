@@ -36,16 +36,6 @@ const DataInputSection: React.FC<Props> = ({
     reader.readAsText(file);
   };
 
-  // Provide appropriate numerical options based on the selected unit
-  const getNumericOptions = () => {
-    switch (horizonUnit) {
-      case 'hours': return [1, 3, 6, 12, 24, 48, 72];
-      case 'days': return [1, 3, 5, 7, 14, 30];
-      case 'years': return [1, 2, 5, 10, 20];
-      default: return [1, 5, 10];
-    }
-  };
-
   return (
     <div className="space-y-6 bg-white p-6 rounded-2xl shadow-xl border border-slate-100">
       <div className="flex items-center gap-2 border-b border-slate-50 pb-4">
@@ -68,22 +58,17 @@ const DataInputSection: React.FC<Props> = ({
           <div className="col-span-2">
             <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Forecast Horizon</label>
             <div className="flex gap-2">
-              <select 
+              <input 
+                type="number"
+                min="1"
                 value={horizonValue}
-                onChange={(e) => setHorizonValue(parseInt(e.target.value))}
+                onChange={(e) => setHorizonValue(Math.max(1, parseInt(e.target.value) || 1))}
                 className="flex-[1.5] px-3 py-2 bg-slate-50 border-none rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-indigo-500"
-              >
-                {getNumericOptions().map(v => <option key={v} value={v}>{v}</option>)}
-              </select>
+                placeholder="Value"
+              />
               <select 
                 value={horizonUnit}
-                onChange={(e) => {
-                  const newUnit = e.target.value as HorizonUnit;
-                  setHorizonUnit(newUnit);
-                  // Reset value to first available if current value isn't in new options
-                  const opts = newUnit === 'hours' ? [1, 3, 6, 12, 24, 48, 72] : newUnit === 'days' ? [1, 3, 5, 7, 14, 30] : [1, 2, 5, 10, 20];
-                  if (!opts.includes(horizonValue)) setHorizonValue(opts[0]);
-                }}
+                onChange={(e) => setHorizonUnit(e.target.value as HorizonUnit)}
                 className="flex-1 px-3 py-2 bg-slate-50 border-none rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="hours">Hours</option>
